@@ -6,7 +6,7 @@
 //
 
 static const double kBufferSize = 1000*1000; // 1 MB
-static const NSTimeInterval kDefaultRequestTimeout = 30;
+static const NSTimeInterval kDefaultRequestTimeout = 60;
 static const NSInteger kNumberOfSamples = 5;
 
 NSString * const TCBlobDownloadErrorDomain = @"com.thibaultcha.tcblobdownload";
@@ -21,16 +21,17 @@ NSString * const TCBlobDownloadErrorHTTPStatusKey = @"TCBlobDownloadErrorHTTPSta
 @property (nonatomic, copy, readwrite) NSString *pathToFile;
 @property (nonatomic, copy, readwrite) NSString *pathToDownloadDirectory;
 @property (nonatomic, assign, readwrite) TCBlobDownloadState state;
-// Download
+//
+
 @property (nonatomic, strong) NSURLConnection *connection;
 @property (nonatomic, strong) NSMutableData *receivedDataBuffer;
 @property (nonatomic, strong) NSFileHandle *file;
 // Speed rate and remaining time
 @property (nonatomic, strong) NSTimer *speedTimer;
 @property (nonatomic, strong) NSMutableArray *samplesOfDownloadedBytes;
+@property (nonatomic, assign) uint64_t previousTotal;
 @property (nonatomic, assign) uint64_t expectedDataLength;
 @property (nonatomic, assign) uint64_t receivedDataLength;
-@property (nonatomic, assign) uint64_t previousTotal;
 @property (nonatomic, assign, readwrite) NSInteger speedRate;
 @property (nonatomic, assign, readwrite) NSInteger remainingTime;
 // Blocks
@@ -105,6 +106,9 @@ NSString * const TCBlobDownloadErrorHTTPStatusKey = @"TCBlobDownloadErrorHTTPSta
 - (void)start
 {
     // If we can't handle the request, better cancelling the operation right now
+    if ([self isCancelled]) {
+        return;
+    }
     if (![NSURLConnection canHandleRequest:self.fileRequest]) {
         NSError *error = [NSError errorWithDomain:TCBlobDownloadErrorDomain
                                              code:TCBlobDownloadErrorInvalidURL
@@ -239,6 +243,10 @@ NSString * const TCBlobDownloadErrorHTTPStatusKey = @"TCBlobDownloadErrorHTTPSta
 
 - (void)connection:(NSURLConnection*)connection didReceiveData:(NSData *)data
 {
+    if ([self isFinished]) {
+        [self finishOperationWithState:self.state];
+        return;
+    }
     [self.receivedDataBuffer appendData:data];
     self.receivedDataLength += [data length];
 
@@ -251,8 +259,7 @@ NSString * const TCBlobDownloadErrorHTTPStatusKey = @"TCBlobDownloadErrorHTTPSta
         [self.file writeData:self.receivedDataBuffer];
         [self.receivedDataBuffer setData:nil];
     }
-
-    dispatch_async(dispatch_get_main_queue(), ^{
+//    dispatch_async(dispatch_get_main_queue(), ^{
         if (self.progressBlock) {
             self.progressBlock(self.receivedDataLength, self.expectedDataLength, self.remainingTime, self.progress);
         }
@@ -262,7 +269,7 @@ NSString * const TCBlobDownloadErrorHTTPStatusKey = @"TCBlobDownloadErrorHTTPSta
                             onTotal:self.expectedDataLength
                            progress:self.progress];
         }
-    });
+//    });
 }
 
 - (void)connectionDidFinishLoading:(NSURLConnection*)connection
@@ -305,18 +312,24 @@ NSString * const TCBlobDownloadErrorHTTPStatusKey = @"TCBlobDownloadErrorHTTPSta
 
 
 - (void)finishOperationWithState:(TCBlobDownloadState)state
-{    
+{
     // Cancel the connection in case cancel was called directly
     [self.connection cancel];
     [self.speedTimer invalidate];
     [self.file closeFile];
     
     // Let's finish the operation once and for all
-    [self willChangeValueForKey:@"isFinished"];
-    [self willChangeValueForKey:@"isExecuting"];
-    self.state = state;
-    [self didChangeValueForKey:@"isExecuting"];
-    [self didChangeValueForKey:@"isFinished"];
+    if ([self isExecuting]) {
+        [self willChangeValueForKey:@"isFinished"];
+        [self willChangeValueForKey:@"isExecuting"];
+        self.state = state;
+        [self didChangeValueForKey:@"isExecuting"];
+        [self didChangeValueForKey:@"isFinished"];
+    } else {
+        [self willChangeValueForKey:@"isExecuting"];
+        self.state = state;
+        [self didChangeValueForKey:@"isExecuting"];
+    }
 }
 
 - (void)cancel
@@ -332,26 +345,26 @@ NSString * const TCBlobDownloadErrorHTTPStatusKey = @"TCBlobDownloadErrorHTTPSta
     
     // Notify from error if any
     if (error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
+//        dispatch_async(dispatch_get_main_queue(), ^{
             if (self.errorBlock) {
                 self.errorBlock(error);
             }
             if ([self.delegate respondsToSelector:@selector(download:didStopWithError:)]) {
                 [self.delegate download:self didStopWithError:error];
             }
-        });
+//        });
     }
 
     // Notify from completion if the operation
-    dispatch_async(dispatch_get_main_queue(), ^{
+//    dispatch_async(dispatch_get_main_queue(), ^{
         if (self.completeBlock) {
             self.completeBlock(success, pathToFile);
         }
-        if ([self.delegate respondsToSelector:@selector(download:didFinishWithSuccess:atPath:)]) {
-            [self.delegate download:self didFinishWithSuccess:success atPath:pathToFile];
+        if ([self.delegate respondsToSelector:@selector(download:didFinishWithSuccess:error:atPath:)]) {
+            [self.delegate download:self didFinishWithSuccess:success error:error atPath:pathToFile];
         }
-    });
-    
+//    });
+
     // Finish the operation
     TCBlobDownloadState finalState = success ? TCBlobDownloadStateDone : TCBlobDownloadStateFailed;
     [self finishOperationWithState:finalState];
@@ -359,6 +372,9 @@ NSString * const TCBlobDownloadErrorHTTPStatusKey = @"TCBlobDownloadErrorHTTPSta
 
 - (void)updateTransferRate
 {
+    if ([self isFinished]) {
+        [self finishOperationWithState:self.state];
+    }
     if (self.samplesOfDownloadedBytes.count > kNumberOfSamples) {
         [self.samplesOfDownloadedBytes removeObjectAtIndex:0];
     }
