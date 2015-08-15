@@ -227,14 +227,14 @@ NSString * const TCBlobDownloadErrorHTTPStatusKey = @"TCBlobDownloadErrorHTTPSta
     if (!error) {
         [self.receivedDataBuffer setData:nil];
 
-        dispatch_async(dispatch_get_main_queue(), ^{
+//        dispatch_async(dispatch_get_main_queue(), ^{
             if (self.firstResponseBlock) {
                 self.firstResponseBlock(response);
             }
             if ([self.delegate respondsToSelector:@selector(download:didReceiveFirstResponse:)]) {
                 [self.delegate download:self didReceiveFirstResponse:response];
             }
-        });
+//        });
     }
     else {
         [self notifyFromCompletionWithError:error pathToFile:self.pathToFile];
